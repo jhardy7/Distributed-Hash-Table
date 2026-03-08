@@ -1,0 +1,10 @@
+register bob 1 2 3
+register jill 4 5 6
+register jack 7 8 9
+setup-dht bob 3 2001
+dht-complete billy
+register john 10 2 3
+dht-complete bob
+register john 10 2 3
+query-dht john
+exit
