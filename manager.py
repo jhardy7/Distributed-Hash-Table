@@ -1,30 +1,25 @@
 import socket
 import random
 
-class registeredPeer:
-    def __init__(self, name, ip, mPort, pPort):
-        self.name = name
-        self.ip = ip
-        self.mPort = mPort
-        self.pPort = pPort
-        self.state = "free"
+def register(name, ip, mPort, pPort):
+    if not name.isalpha() or len(name) > 15:
+        return False
 
-def register(peerName, ip, mPort, pPort):
-    if not peerName.isalpha() or len(peerName) > 15:
+    if name in peerList:
         return False
-    
-    if peerName in peerList:
-        return False
-    
+
     for peer in peerList.values():
-        if peer.ip == ip:
-            if peer.mPort == mPort or peer.pPort == pPort:
-                return False
+        if peer["mPort"] == mPort or peer["pPort"] == pPort:
+            return False
 
-    peerList[peerName] = registeredPeer(peerName, ip, mPort, pPort)
+    peerList[name] = {"name": name,
+                      "ip": ip,
+                      "mPort": mPort,
+                      "pPort": pPort,
+                      "state": "free"}
     return True
 
-def setup(peerName, size, year):
+def setup(name, size, year):
     if int(size) < 3:
         return False
     
@@ -34,72 +29,44 @@ def setup(peerName, size, year):
     if dhtActive:
         return False
     
-    if peerName not in peerList:
+    if name not in peerList:
         return False
     
-    freePeers = []
-
-    peerList[peerName].state = "leader"
-    dhtPeers.append(peerList[peerName])
+    peerList[name]["state"] = "leader"
+    dht.append(peerList[name])
     
+    freePeers = []
     for peer in peerList.values():
-        if peer.state == "free":
+        if peer["state"] == "free":
             freePeers.append(peer)
 
     for x in range(int(size)-1):
         randomPeer = random.choice(freePeers)
-        randomPeer.state = "inDHT"
-        dhtPeers.append(randomPeer)
+        randomPeer["state"] = "inDHT"
+        dht.append(randomPeer)
     return True
 
-def complete(peerName):
-    if peerName not in peerList:
+def complete(name):
+    if name not in peerList:
         return False
-    return peerList[peerName].state == "leader"
-
-def query(peerName):
-    if not dhtActive:
-        return False
-    if peerName not in peerList:
-        return False
-    if peerList[peerName].state != "free":
-        return False
-    return True
-
-def leave():
-    pass
-
-def join():
-    pass
-
-def rebuilt():
-    pass
-
-def deregister():
-    pass
-
-def teardown():
-    pass
-
-def teardownComplete():
-    pass
-
-peerList = {}
-dhtPeers = []
-dhtActive = False
-dhtWaitingToComplete = False
+    return peerList[name]["state"] == "leader"
 
 socket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 socket.bind(('localhost',3500))
 
+peerList = {}
+dht = []
+dhtActive = False
+dhtWaitingToComplete = False
+
 while True:
     command, address = socket.recvfrom(1024)
     command = command.decode().split()
-    
+
     if dhtWaitingToComplete:
         match command:
-            case ["dht-complete", peerName]:
-                if complete(peerName):
+            case ["dht-complete", name]:
+                if complete(name):
                     socket.sendto(b'SUCCESS',address)
                     dhtWaitingToComplete = False
                     dhtActive = True
@@ -107,58 +74,40 @@ while True:
                     socket.sendto(b'FAILURE',address)
             case _:
                 socket.sendto(b'FAILURE',address)
+
     else:
         match command:
-            case ["register", peerName, ip, mPort, pPort]:
-                if register(peerName, ip, mPort, pPort):
-                    socket.sendto(b'SUCCESS',address)
+            case ["register", name, ip, mPort, pPort]:
+                if register(name, ip, mPort, pPort):
+                    response = f"SUCCESS {command[0]} {pPort}"
+                    socket.sendto(response.encode(), address)
                 else:
-                    socket.sendto(b'FAILURE',address)
+                    response = f"FAILURE {command[0]}"
+                    socket.sendto(response.encode(), address)
 
-            case ["setup-dht", peerName, size, year]:
-                if setup(peerName, size, year):
-                    message = "SUCCESS\n"
-                    for peer in dhtPeers:
-                        message += f"{peer.name} {peer.ip} {peer.pPort}\n"   
-                    socket.sendto(message.encode(),address)
+            case ["setup-dht", name, size, year]:
+                if setup(name, size, year):
+                    response = f"SUCCESS {command[0]} {year} "
+                    for peer in dht:
+                        response += f"{peer["name"]},{peer["ip"]},{peer["pPort"]} "
+                    socket.sendto(response.encode(), address)
                     dhtWaitingToComplete = True
                 else:
-                    socket.sendto(b'FAILURE',address)
+                    response = f"FAILURE {command[0]}"
+                    socket.sendto(response.encode(), address)
 
-            case ["dht-complete", peerName]:
-                if complete(peerName):
-                    socket.sendto(b'SUCCESS',address)
+            case ["dht-complete", name]:
+                if complete(name):
+                    response = f"SUCCESS {command[0]}"
+                    socket.sendto(response.encode(), address)
                 else:
-                    socket.sendto(b'FAILURE',address)
-
-            case ["query-dht", peerName]:
-                if query(peerName):
-                    socket.sendto(b'SUCCESS',address)
-                else:
-                    socket.sendto(b'FAILURE',address)
-
-            case ["leave-dht", peerName]:
-                socket.sendto(b'SUCCESS',address)
-
-            case ["join-dht", peerName]:
-                socket.sendto(b'SUCCESS',address)
-
-            case ["dht-rebuilt", peerName, newLeader]:
-                socket.sendto(b'SUCCESS',address)
-
-            case ["deregister", peerName]:
-                socket.sendto(b'SUCCESS',address)
-
-            case ["teardown-dht", peerName]:
-                socket.sendto(b'SUCCESS',address)
-
-            case ["teardown-complete", peerName]:
-                socket.sendto(b'SUCCESS',address)
+                    response = f"FAILURE {command[0]}"
+                    socket.sendto(response.encode(), address)
 
             case ["exit"]:
                 break
 
             case _:
-                socket.sendto(b'FAILURE',address)
+                socket.sendto(b'FAILURE', address)
 
 socket.close()
