@@ -1,118 +1,134 @@
 import socket
 import threading
+import traceback
 import csv
 import time
 
-id = None
-ringSize = None
-neighbor = None
-hashTable = None
+class Peer:
 
-def isPrime(n):
-    if n < 2: return False
-    for i in range(2, int(n**0.5) + 1):
-        if n % i == 0: return False
-    return True
+    def __init__(self, name, ip, mPort, pPort):
+        self.name = name
+        self.ip = ip
+        self.mPort = int(mPort)
+        self.pPort = int(pPort)
+        self.state = "free"
+        self.id = None
+        self.ringSize = None
+        self.data = {}
+        self.neighbor = None
 
-def getTableSize(l):
-    s = 2 * l + 1
-    while not isPrime(s):
-        s += 1
-    return s
+        self.sendSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        self.sendSocket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 10485760)
+        threading.Thread(target=self.peerListener,daemon=True).start()
 
-def populateTable(filename, s, size):
-    global id,hashTable, neighbor
+    def __str__(self):
+        return f"({self.name} {self.ip} {self.pPort})"
 
-    with open(filename, 'r') as f:
-        reader = csv.reader(f)
-        next(reader)
+    def peerListener(self):
+        try:
+            self.listenSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+            self.listenSocket.bind(('localhost',int(self.pPort)))
 
-        for row in reader:
-            eventId = int(row[0])
-            pos = eventId % s
-            targetId = pos % int(size)
+            while True:
+                command, address = self.listenSocket.recvfrom(8192)
+                command = command.decode().split()
 
-            if targetId == id:
-                hashTable[pos] = row
-            else:
-                payload = "|".join(row)
-                command = f"store {targetId} {pos} {payload}"
-                mSocket.sendto(command.encode(),('localhost', int(neighbor.split(",")[2])))
-                time.sleep(0.001)
+                match command:
+                    case ["set-id", id, ringSize, *dht]:
+                        self.id = int(id)
+                        self.ringSize = int(ringSize)
 
-def betweenPeer(pPort):
-    global id, ringSize, neighbor, hashTable
+                        if self.id == self.ringSize - 1:
+                            self.neighbor = int(dht[0])
+                        else:
+                            self.neighbor = int(dht[self.id+1])
+                            command = f"set-id {self.id + 1} {ringSize} {" ".join(map(str, dht))}"
+                            self.sendSocket.sendto(command.encode(),('localhost', self.neighbor))
 
-    pSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    pSocket.bind(('localhost',int(pPort)))
-    while True:
-        command, address = pSocket.recvfrom(8192)
-        ogCommand = command
-        command = command.decode().split()
+                    case ["store", targetId, pos, *record]:
+                        if int(targetId) == self.id:
+                            self.data[int(pos)] = record
+                        else:
+                            command = f"store {targetId} {pos} {record}"
+                            self.sendSocket.sendto(command.encode(),('localhost', self.neighbor))
 
-        match command:
-            case ["set-id", ids, ringSizes, neighbors]:
-                id = ids
-                ringSize = ringSizes
-                neighbor = neighbors
-            
-            case ["build-hash", s]:
-                hashTable = [None] * int(s)
+                    case ["find-event", eventId]:
+                        for pos in self.data.keys():
+                            if int(self.data[pos][7]) == eventId:
+                                print(self.data[pos])
+                                return
+                            
+                        command = f"find-event {eventId}"          
+                        self.sendSocket.sendto(command.encode(), ('localhost', self.neighbor))    
+        except Exception as e:
+            pass
 
-            case ["store", targetId, pos, payload]:
-                targetId = int(targetId)
-                pos = int(pos)
+    def setupDHT(self, ringSize, dht, year):
+        self.state = "leader"
+        self.id = 0
+        self.ringSize = int(ringSize)
+        self.neighbor = dht[self.id + 1].pPort
 
-                if targetId == id:
-                    hashTable[pos] = payload.split("|")
-                else:
-                    pSocket.sendto(ogCommand, ('localhost', int(neighbor.split(",")[2])))
+        dhtPorts = []
+        for i in range(len(dht)):
+            dhtPorts.append(dht[i].pPort) 
 
-mSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        command = f"set-id {self.id + 1} {ringSize} {" ".join(map(str, dhtPorts))}"
+        self.sendSocket.sendto(command.encode(),('localhost', self.neighbor))
+        self.setData(year)
 
-while True:
-    command = input()
-    mSocket.sendto(command.encode(),('localhost',3500))
+        time.sleep(2)
+        command = f"dht-complete {self.name}"
+        self.sendSocket.sendto(command.encode(),('localhost', 3500))
 
-    if command == "exit":
-        break
+        for peer in dht:
+            print(f"{peer.name}: {len(peer.data)} records")
 
-    message, address = mSocket.recvfrom(1024)
-    message = message.decode().split()
+    def setData(self, year):
+        count = 0
+        filename = f"./data/StormEvents_details-ftp_v1.0_d{year}_c20250520.csv"
+        with open(filename, 'r') as f:
+            for line in f:
+                count += 1
+        
+        l = count - 1
+        s = 2 * l + 1
+        while not self.isPrime(s):
+            s += 1
 
-    match message:
-        case ["SUCCESS", "register", pPort]:
-            print(message[0])
-            threading.Thread(target=betweenPeer,args=(pPort,),daemon=True).start()
+        with open(filename, 'r') as f:
+            reader = csv.reader(f)
+            next(reader)
 
-        case ["SUCCESS", "setup-dht", year, *peers]:
-            print(message[0], message[1], peers)
-
-            id = 0
-            ringSize = len(peers)
-            neighbor = peers[1 % ringSize]
-
-            size = len(peers)
-            for i in range(size):
-                pPort = peers[i].split(",")[2]
-                command = f"set-id {i} {size} {peers[(i+1)% size]}"
-                mSocket.sendto(command.encode(),('localhost',int(pPort)))  
-
-            filename = f"data/StormEvents_details-ftp_v1.0_d{year}_c20250520.csv"
-            with open(filename, 'r') as file: 
-                lines = sum(1 for line in file) - 1    
+            for row in reader:
+                eventId = int(row[7]) 
+                pos = eventId % s
+                targetId = pos % self.ringSize
                 
-            s = getTableSize(lines)
-            for i in range(size):
-                pPort = peers[i].split(",")[2]
-                command = f"build-hash {s}"
-                mSocket.sendto(command.encode(),('localhost',int(pPort))) 
-            populateTable(filename,s,size)
+                if targetId == self.id:
+                    self.data[pos] = row
+                else:
+                    record_str = "|".join(row)
+                    command = f"store {targetId} {pos} {record_str}" 
+                    self.sendSocket.sendto(command.encode(), ('localhost', self.neighbor))
 
-            command = f"dht-complete {peers[0].split(","[0])}"
-            mSocket.sendto(command.encode(),('localhost',3500))
+    def query(self, eventId):
+        for pos in self.data.keys():
+            if int(self.data[pos][7]) == eventId:
+                print(self.data[pos])
+                return
+            
+        command = f"find-event {eventId}"          
+        self.sendSocket.sendto(command.encode(), ('localhost', self.neighbor))
 
-        case _:
-            print(message[0])
-
-mSocket.close()
+    def isPrime(self, n):
+        if n < 2: return False
+        for i in range(2, int(n**0.5) + 1):
+            if n % i == 0: return False
+        return True
+    
+    def getTableSize(self, l):
+        s = 2 * l + 1
+        while not self.isPrime(s):
+            s += 1
+        return s

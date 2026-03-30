@@ -1,8 +1,17 @@
-register bob 1 2 3501
-register jill 1 3 3502
-register jack 1 4 3503
-setup-dht bob 3 2001
-register john 1 5 3504
-dht-complete bob
-register john 1 5 3504
+register a 1 2 3501
+register b 1 3 3502
+register c 1 4 3503
+register d 1 5 3504
+register e 1 6 3505
+register f 1 7 3506
+setup-dht a 5 1996
+dht-complete a
+query-dht e 5536849
+query-dht f 2402920
+query-dht f 5539287
+query-dht f 55770111
+leave-dht b
+query-dht b 5536849
+join-dht f
+teardown-dht a
 exit
